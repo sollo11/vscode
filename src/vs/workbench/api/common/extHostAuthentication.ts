@@ -39,11 +39,6 @@ export class ExtHostAuthentication implements ExtHostAuthenticationShape {
 		this._proxy = mainContext.getProxy(MainContext.MainThreadAuthentication);
 	}
 
-	$setProviders(providers: vscode.AuthenticationProviderInformation[]): Promise<void> {
-		this._providers = providers;
-		return Promise.resolve();
-	}
-
 	get providers(): ReadonlyArray<vscode.AuthenticationProviderInformation> {
 		return Object.freeze(this._providers.slice());
 	}
@@ -111,7 +106,11 @@ export class ExtHostAuthentication implements ExtHostAuthenticationShape {
 		}
 
 		const listener = provider.onDidChangeSessions(e => {
-			this._proxy.$sendDidChangeSessions(id, e);
+			this._proxy.$sendDidChangeSessions(id, {
+				added: e.added ?? [],
+				changed: e.changed ?? [],
+				removed: e.changed ?? []
+			});
 		});
 
 		this._proxy.$registerAuthenticationProvider(id, label, options?.supportsMultipleAccounts ?? false);
@@ -156,8 +155,8 @@ export class ExtHostAuthentication implements ExtHostAuthenticationShape {
 		throw new Error(`Unable to find authentication provider with handle: ${providerId}`);
 	}
 
-	$onDidChangeAuthenticationSessions(id: string, label: string, event: modes.AuthenticationSessionsChangeEvent) {
-		this._onDidChangeSessions.fire({ provider: { id, label }, ...event });
+	$onDidChangeAuthenticationSessions(id: string, label: string) {
+		this._onDidChangeSessions.fire({ provider: { id, label } });
 		return Promise.resolve();
 	}
 

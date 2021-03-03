@@ -11,18 +11,30 @@ import { IContextKey, IContextKeyService, RawContextKey } from 'vs/platform/cont
 import { registerSingleton } from 'vs/platform/instantiation/common/extensions';
 import { IStorageService, StorageScope, StorageTarget } from 'vs/platform/storage/common/storage';
 import { IWorkspace, IWorkspaceContextService, WorkbenchState } from 'vs/platform/workspace/common/workspace';
-import { IWorkspaceTrustModel, IWorkspaceTrustRequest, IWorkspaceTrustRequestModel, IWorkspaceTrustService, IWorkspaceTrustStateInfo, WorkspaceTrustState, WorkspaceTrustStateChangeEvent } from 'vs/platform/workspace/common/workspaceTrust';
+import { IWorkspaceTrustModel, WorkspaceTrustRequest, IWorkspaceTrustRequestModel, IWorkspaceTrustService, IWorkspaceTrustStateInfo, WorkspaceTrustState, WorkspaceTrustStateChangeEvent } from 'vs/platform/workspace/common/workspaceTrust';
 import { isEqual, isEqualOrParent } from 'vs/base/common/extpath';
+import { EditorModel } from 'vs/workbench/common/editor';
 
 export const WORKSPACE_TRUST_ENABLED = 'workspace.trustEnabled';
 export const WORKSPACE_TRUST_STORAGE_KEY = 'content.trust.model.key';
-export const WORKSPACE_TRUST_URI = URI.parse('workspaceTrust:/Trusted Workspaces');
 
 export const WorkspaceTrustContext = {
 	PendingRequest: new RawContextKey<boolean>('workspaceTrustPendingRequest', false),
 	TrustState: new RawContextKey<WorkspaceTrustState>('workspaceTrustState', WorkspaceTrustState.Unknown)
 };
 
+export class WorkspaceTrustEditorModel extends EditorModel {
+	constructor(
+		readonly dataModel: IWorkspaceTrustModel,
+		private readonly workspaceTrustService: WorkspaceTrustService
+	) {
+		super();
+	}
+
+	get currentWorkspaceTrustState(): WorkspaceTrustState {
+		return this.workspaceTrustService.getWorkspaceTrustState();
+	}
+}
 export class WorkspaceTrustModel extends Disposable implements IWorkspaceTrustModel {
 
 	private storageKey = WORKSPACE_TRUST_STORAGE_KEY;
@@ -82,6 +94,30 @@ export class WorkspaceTrustModel extends Disposable implements IWorkspaceTrustMo
 		this._onDidChangeTrustState.fire();
 	}
 
+	setTrustedFolders(folders: URI[]): void {
+		this.trustStateInfo.localFolders = this.trustStateInfo.localFolders.filter(folder => folder.trustState !== WorkspaceTrustState.Trusted);
+		for (const folder of folders) {
+			this.trustStateInfo.localFolders.push({
+				trustState: WorkspaceTrustState.Trusted,
+				uri: folder.fsPath
+			});
+		}
+
+		this.saveTrustInfo();
+	}
+
+	setUntrustedFolders(folders: URI[]): void {
+		this.trustStateInfo.localFolders = this.trustStateInfo.localFolders.filter(folder => folder.trustState !== WorkspaceTrustState.Untrusted);
+		for (const folder of folders) {
+			this.trustStateInfo.localFolders.push({
+				trustState: WorkspaceTrustState.Untrusted,
+				uri: folder.fsPath
+			});
+		}
+
+		this.saveTrustInfo();
+	}
+
 	setFolderTrustState(folder: URI, trustState: WorkspaceTrustState): void {
 		let changed = false;
 
@@ -135,10 +171,14 @@ export class WorkspaceTrustModel extends Disposable implements IWorkspaceTrustMo
 
 		return result;
 	}
+
+	getTrustStateInfo(): IWorkspaceTrustStateInfo {
+		return this.trustStateInfo;
+	}
 }
 
 export class WorkspaceTrustRequestModel extends Disposable implements IWorkspaceTrustRequestModel {
-	trustRequest: IWorkspaceTrustRequest | undefined;
+	trustRequest: WorkspaceTrustRequest | undefined;
 
 	private readonly _onDidInitiateRequest = this._register(new Emitter<void>());
 	readonly onDidInitiateRequest: Event<void> = this._onDidInitiateRequest.event;
@@ -146,8 +186,8 @@ export class WorkspaceTrustRequestModel extends Disposable implements IWorkspace
 	private readonly _onDidCompleteRequest = this._register(new Emitter<WorkspaceTrustState | undefined>());
 	readonly onDidCompleteRequest = this._onDidCompleteRequest.event;
 
-	initiateRequest(request: IWorkspaceTrustRequest): void {
-		if (this.trustRequest && (!request.immediate || this.trustRequest.immediate)) {
+	initiateRequest(request: WorkspaceTrustRequest): void {
+		if (this.trustRequest && (!request.modal || this.trustRequest.modal)) {
 			return;
 		}
 
@@ -166,6 +206,7 @@ export class WorkspaceTrustService extends Disposable implements IWorkspaceTrust
 	_serviceBrand: undefined;
 	private readonly dataModel: IWorkspaceTrustModel;
 	readonly requestModel: IWorkspaceTrustRequestModel;
+	private editorModel?: WorkspaceTrustEditorModel;
 
 	private readonly _onDidChangeTrustState = this._register(new Emitter<WorkspaceTrustStateChangeEvent>());
 	readonly onDidChangeTrustState = this._onDidChangeTrustState.event;
@@ -210,6 +251,14 @@ export class WorkspaceTrustService extends Disposable implements IWorkspaceTrust
 		this._currentTrustState = trustState;
 
 		this._onDidChangeTrustState.fire({ previousTrustState: previousState, currentTrustState: this._currentTrustState });
+	}
+
+	get workspaceTrustEditorModel(): WorkspaceTrustEditorModel {
+		if (this.editorModel === undefined) {
+			this.editorModel = this._register(new WorkspaceTrustEditorModel(this.dataModel, this));
+		}
+
+		return this.editorModel;
 	}
 
 	private calculateWorkspaceTrustState(): WorkspaceTrustState {
@@ -270,18 +319,18 @@ export class WorkspaceTrustService extends Disposable implements IWorkspaceTrust
 		return this.configurationService.getValue<boolean>(WORKSPACE_TRUST_ENABLED) ?? false;
 	}
 
-	async requireWorkspaceTrust(request?: IWorkspaceTrustRequest): Promise<WorkspaceTrustState> {
+	async requireWorkspaceTrust(request: WorkspaceTrustRequest = { modal: true }): Promise<WorkspaceTrustState> {
 		if (this.currentTrustState === WorkspaceTrustState.Trusted) {
 			return this.currentTrustState;
 		}
-		if (this.currentTrustState === WorkspaceTrustState.Untrusted && !request?.immediate) {
+		if (this.currentTrustState === WorkspaceTrustState.Untrusted && !request.modal) {
 			return this.currentTrustState;
 		}
 
 		if (this._trustRequestPromise) {
-			if (request?.immediate &&
+			if (request.modal &&
 				this.requestModel.trustRequest &&
-				!this.requestModel.trustRequest.immediate) {
+				!this.requestModel.trustRequest.modal) {
 				this.requestModel.initiateRequest(request);
 			}
 

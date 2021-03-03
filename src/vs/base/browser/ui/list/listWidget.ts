@@ -831,6 +831,14 @@ export class DefaultStyleController implements IStyleController {
 			content.push(`.monaco-list-type-filter { box-shadow: 1px 1px 1px ${styles.listMatchesShadow}; }`);
 		}
 
+		if (styles.tableColumnsBorder) {
+			content.push(`
+				.monaco-table:hover > .monaco-split-view2,
+				.monaco-table:hover > .monaco-split-view2 .monaco-sash.vertical::before {
+					border-color: ${styles.tableColumnsBorder};
+			}`);
+		}
+
 		this.styleElement.textContent = content.join('\n');
 	}
 }
@@ -886,6 +894,7 @@ export interface IListStyles {
 	listFilterWidgetNoMatchesOutline?: Color;
 	listMatchesShadow?: Color;
 	treeIndentGuidesStroke?: Color;
+	tableColumnsBorder?: Color;
 }
 
 const defaultStyles: IListStyles = {
@@ -897,7 +906,8 @@ const defaultStyles: IListStyles = {
 	listInactiveSelectionBackground: Color.fromHex('#3F3F46'),
 	listHoverBackground: Color.fromHex('#2A2D2E'),
 	listDropBackground: Color.fromHex('#383B3D'),
-	treeIndentGuidesStroke: Color.fromHex('#a9a9a9')
+	treeIndentGuidesStroke: Color.fromHex('#a9a9a9'),
+	tableColumnsBorder: Color.fromHex('#cccccc').transparent(0.2)
 };
 
 const DefaultOptions: IListOptions<any> = {
@@ -1155,8 +1165,25 @@ export class List<T> implements ISpliceable<T>, IThemable, IDisposable {
 	get onTouchStart(): Event<IListTouchEvent<T>> { return this.view.onTouchStart; }
 	get onTap(): Event<IListGestureEvent<T>> { return this.view.onTap; }
 
+	/**
+	 * Possible context menu trigger events:
+	 * - ContextMenu key
+	 * - Shift F10
+	 * - Ctrl Option Shift M (macOS with VoiceOver)
+	 * - Mouse right click
+	 */
 	@memoize get onContextMenu(): Event<IListContextMenuEvent<T>> {
-		const fromKeyboard = Event.chain(domEvent(this.view.domNode, 'keyup'))
+		let didJustPressContextMenuKey = false;
+
+		const fromKeyDown = Event.chain(domEvent(this.view.domNode, 'keydown'))
+			.map(e => new StandardKeyboardEvent(e))
+			.filter(e => didJustPressContextMenuKey = e.keyCode === KeyCode.ContextMenu || (e.shiftKey && e.keyCode === KeyCode.F10))
+			.map(stopEvent)
+			.filter(() => false)
+			.event as Event<any>;
+
+		const fromKeyUp = Event.chain(domEvent(this.view.domNode, 'keyup'))
+			.forEach(() => didJustPressContextMenuKey = false)
 			.map(e => new StandardKeyboardEvent(e))
 			.filter(e => e.keyCode === KeyCode.ContextMenu || (e.shiftKey && e.keyCode === KeyCode.F10))
 			.map(stopEvent)
@@ -1170,11 +1197,11 @@ export class List<T> implements ISpliceable<T>, IThemable, IDisposable {
 			.event;
 
 		const fromMouse = Event.chain(this.view.onContextMenu)
-			.filter(e => !(e.browserEvent.button === 0 && e.browserEvent.buttons === 0 && !e.browserEvent.ctrlKey && !e.browserEvent.altKey && !e.browserEvent.metaKey))
+			.filter(_ => !didJustPressContextMenuKey)
 			.map(({ element, index, browserEvent }) => ({ element, index, anchor: { x: browserEvent.clientX + 1, y: browserEvent.clientY }, browserEvent }))
 			.event;
 
-		return Event.any<IListContextMenuEvent<T>>(fromKeyboard, fromMouse);
+		return Event.any<IListContextMenuEvent<T>>(fromKeyDown, fromKeyUp, fromMouse);
 	}
 
 	get onKeyDown(): Event<KeyboardEvent> { return domEvent(this.view.domNode, 'keydown'); }

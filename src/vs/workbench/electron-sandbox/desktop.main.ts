@@ -16,7 +16,7 @@ import { INativeWorkbenchConfiguration, INativeWorkbenchEnvironmentService } fro
 import { ServiceCollection } from 'vs/platform/instantiation/common/serviceCollection';
 import { isSingleFolderWorkspaceIdentifier, isWorkspaceIdentifier, IWorkspaceInitializationPayload, reviveIdentifier } from 'vs/platform/workspaces/common/workspaces';
 import { ILoggerService, ILogService } from 'vs/platform/log/common/log';
-import { NativeStorageService2 } from 'vs/platform/storage/electron-sandbox/storageService2';
+import { NativeStorageService } from 'vs/platform/storage/electron-sandbox/storageService';
 import { Schemas } from 'vs/base/common/network';
 import { IWorkspaceContextService } from 'vs/platform/workspace/common/workspace';
 import { IWorkbenchConfigurationService } from 'vs/workbench/services/configuration/common/configuration';
@@ -35,16 +35,16 @@ import { FileUserDataProvider } from 'vs/workbench/services/userData/common/file
 import { basename } from 'vs/base/common/path';
 import { IProductService } from 'vs/platform/product/common/productService';
 import product from 'vs/platform/product/common/product';
-import { NativeLogService } from 'vs/workbench/services/log/electron-sandbox/logService';
 import { INativeHostService } from 'vs/platform/native/electron-sandbox/native';
 import { NativeHostService } from 'vs/platform/native/electron-sandbox/nativeHostService';
 import { IUriIdentityService } from 'vs/workbench/services/uriIdentity/common/uriIdentity';
 import { UriIdentityService } from 'vs/workbench/services/uriIdentity/common/uriIdentityService';
 import { KeyboardLayoutService } from 'vs/workbench/services/keybinding/electron-sandbox/nativeKeyboardLayout';
 import { IKeyboardLayoutService } from 'vs/platform/keyboardLayout/common/keyboardLayout';
-import { LoggerService } from 'vs/workbench/services/log/electron-sandbox/loggerService';
 import { ElectronIPCMainProcessService } from 'vs/platform/ipc/electron-sandbox/mainProcessService';
-import { SimpleConfigurationService, simpleFileSystemProvider, SimpleSignService, SimpleNativeWorkbenchEnvironmentService, SimpleWorkspaceService } from 'vs/workbench/electron-sandbox/sandbox.simpleservices';
+import { SimpleConfigurationService, simpleFileSystemProvider, SimpleSignService, SimpleNativeWorkbenchEnvironmentService, SimpleWorkspaceService, SimpleLogService } from 'vs/workbench/electron-sandbox/sandbox.simpleservices';
+import { LoggerChannelClient } from 'vs/platform/log/common/logIpc';
+import { IEnvironmentService, INativeEnvironmentService } from 'vs/platform/environment/common/environment';
 
 class DesktopMain extends Disposable {
 
@@ -117,14 +117,14 @@ class DesktopMain extends Disposable {
 		services.logService.trace('workbench configuration', JSON.stringify(this.configuration));
 	}
 
-	private registerListeners(workbench: Workbench, storageService: NativeStorageService2): void {
+	private registerListeners(workbench: Workbench, storageService: NativeStorageService): void {
 
 		// Workbench Lifecycle
-		this._register(workbench.onShutdown(() => this.dispose()));
 		this._register(workbench.onWillShutdown(event => event.join(storageService.close(), 'join.closeStorage')));
+		this._register(workbench.onShutdown(() => this.dispose()));
 	}
 
-	private async initServices(): Promise<{ serviceCollection: ServiceCollection, logService: ILogService, storageService: NativeStorageService2 }> {
+	private async initServices(): Promise<{ serviceCollection: ServiceCollection, logService: ILogService, storageService: NativeStorageService }> {
 		const serviceCollection = new ServiceCollection();
 
 
@@ -146,6 +146,8 @@ class DesktopMain extends Disposable {
 		serviceCollection.set(IMainProcessService, mainProcessService);
 
 		// Environment
+		serviceCollection.set(IEnvironmentService, this.environmentService);
+		serviceCollection.set(INativeEnvironmentService, this.environmentService);
 		serviceCollection.set(IWorkbenchEnvironmentService, this.environmentService);
 		serviceCollection.set(INativeWorkbenchEnvironmentService, this.environmentService);
 
@@ -153,11 +155,11 @@ class DesktopMain extends Disposable {
 		serviceCollection.set(IProductService, this.productService);
 
 		// Logger
-		const loggerService = new LoggerService(mainProcessService);
+		const loggerService = new LoggerChannelClient(mainProcessService.getChannel('logger'));
 		serviceCollection.set(ILoggerService, loggerService);
 
-		// Log
-		const logService = this._register(new NativeLogService(`renderer${this.configuration.windowId}`, loggerService, mainProcessService, this.environmentService));
+		// Log (we can only use the real logger, once `IEnvironmentService#logFile` has a proper file:// based value (https://github.com/microsoft/vscode/issues/116829))
+		const logService = new SimpleLogService();
 		serviceCollection.set(ILogService, logService);
 
 		// Remote
@@ -295,8 +297,8 @@ class DesktopMain extends Disposable {
 		return new SimpleWorkspaceService();
 	}
 
-	private async createStorageService(payload: IWorkspaceInitializationPayload, mainProcessService: IMainProcessService): Promise<NativeStorageService2> {
-		const storageService = new NativeStorageService2(payload, mainProcessService, this.environmentService);
+	private async createStorageService(payload: IWorkspaceInitializationPayload, mainProcessService: IMainProcessService): Promise<NativeStorageService> {
+		const storageService = new NativeStorageService(payload, mainProcessService, this.environmentService);
 
 		try {
 			await storageService.initialize();
